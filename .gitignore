@@ -1,0 +1,15 @@
+# Secrets — NEVER upload
+.streamlit/secrets.toml
+
+# Large index file — rebuilt automatically
+data/faiss_index.pkl
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
