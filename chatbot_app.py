@@ -3,41 +3,59 @@ PT of the City × COB — Quality Procedures Chatbot
 ──────────────────────────────────────────────────
 Run with:  streamlit run chatbot_app.py
 """
-
+ 
 import os, json, pickle
 import streamlit as st
 import numpy as np
 import faiss
 from groq import Groq
 from sentence_transformers import SentenceTransformer
-
+ 
 # ─────────────────────────────────────────────
 # CONFIG  — reads from .streamlit/secrets.toml
 # ─────────────────────────────────────────────
 GROQ_API_KEY  = st.secrets["GROQ_API_KEY"]
 APP_PASSWORD  = st.secrets["APP_PASSWORD"]
+ 
+# Try multiple possible locations for data files
+BASE_DIR = os.path.dirname(__file__) or "."
+POSSIBLE_DATA_DIRS = [
+    os.path.join(BASE_DIR, "data"),  # data/ subdirectory
+    BASE_DIR,                         # root directory
+]
 
-DATA_DIR      = os.path.join(os.path.dirname(__file__), "data")
+# Find the correct data directory
+DATA_DIR = None
+for dir_path in POSSIBLE_DATA_DIRS:
+    text_path = os.path.join(dir_path, "all_text.json")
+    ocr_path = os.path.join(dir_path, "all_ocr.json")
+    if os.path.exists(text_path) or os.path.exists(ocr_path):
+        DATA_DIR = dir_path
+        break
+
+if DATA_DIR is None:
+    DATA_DIR = os.path.join(BASE_DIR, "data")  # Default fallback
+
 INDEX_PATH    = os.path.join(DATA_DIR, "faiss_index.pkl")
 TEXT_JSON     = os.path.join(DATA_DIR, "all_text.json")
 OCR_JSON      = os.path.join(DATA_DIR, "all_ocr.json")
-
+ 
 GROQ_MODEL    = "llama-3.3-70b-versatile"
 CHUNK_SIZE    = 800
 CHUNK_OVERLAP = 150
 TOP_K         = 6
 # ─────────────────────────────────────────────
-
-
+ 
+ 
 # ══════════════════════════════════════════════
 # PASSWORD GATE
 # ══════════════════════════════════════════════
 def check_password():
     """Returns True if the user has entered the correct password."""
-
+ 
     if st.session_state.get("authenticated"):
         return True
-
+ 
     # ── login page styling ──
     st.markdown("""
     <style>
@@ -100,7 +118,7 @@ def check_password():
     div[data-testid="stFormSubmitButton"] button:hover { opacity: 0.88 !important; }
     </style>
     """, unsafe_allow_html=True)
-
+ 
     st.markdown("""
     <div class="login-box">
         <div class="login-logo-row">
@@ -111,7 +129,7 @@ def check_password():
         <p class="login-subtitle">Enter your access password to continue</p>
     </div>
     """, unsafe_allow_html=True)
-
+ 
     # center the form using columns
     _, col, _ = st.columns([1, 2, 1])
     with col:
@@ -126,8 +144,8 @@ def check_password():
                     st.markdown('<div class="login-error">❌ Incorrect password. Please try again.</div>',
                                 unsafe_allow_html=True)
     return False
-
-
+ 
+ 
 # ══════════════════════════════════════════════
 # STYLING
 # ══════════════════════════════════════════════
@@ -139,7 +157,7 @@ def inject_css():
     #MainMenu, footer, header, .stDeployButton,
     [data-testid="stToolbar"] { display: none !important; }
     .stApp { background: #F0F4F8 !important; }
-
+ 
     [data-testid="stSidebar"] {
         background: linear-gradient(170deg, #0D2137 0%, #0F3460 60%, #0E4D7B 100%) !important;
         border-right: none !important;
@@ -153,9 +171,9 @@ def inject_css():
     [data-testid="stSidebar"] .stButton > button:hover {
         background: rgba(0,210,170,0.2) !important; border-color: #00D2AA !important;
     }
-
+ 
     .main .block-container { padding: 0 2rem 2rem 2rem !important; max-width: 900px !important; }
-
+ 
     .chat-header {
         background: linear-gradient(90deg, #0D2137 0%, #0F3460 100%);
         padding: 1.2rem 2rem; border-radius: 0 0 20px 20px;
@@ -183,9 +201,9 @@ def inject_css():
         color: #00D2AA !important; padding: 4px 12px; border-radius: 20px;
         font-size: 0.72rem; font-weight: 600; letter-spacing: 0.5px;
     }
-
+ 
     [data-testid="stChatMessage"] { background: transparent !important; border: none !important; padding: 0.3rem 0 !important; }
-
+ 
     [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) .stMarkdown {
         background: linear-gradient(135deg, #0F3460, #0D2137) !important;
         color: white !important; border-radius: 18px 18px 4px 18px !important;
@@ -206,7 +224,7 @@ def inject_css():
         background: linear-gradient(135deg, #0F3460, #0D2137) !important;
         color: white !important; border-radius: 50% !important;
     }
-
+ 
     [data-testid="stChatInput"] {
         background: white !important; border: 2px solid #E8EEF4 !important;
         border-radius: 16px !important; box-shadow: 0 4px 20px rgba(13,33,55,0.08) !important;
@@ -218,13 +236,13 @@ def inject_css():
         border-radius: 10px !important; color: white !important;
     }
     .stSpinner > div { border-top-color: #00D2AA !important; }
-
+ 
     .question-chip {
         background: rgba(0,210,170,0.08); border: 1px solid rgba(0,210,170,0.2);
         border-radius: 8px; padding: 7px 11px; margin: 4px 0;
         font-size: 0.78rem; color: #c8dff0 !important; display: block;
     }
-
+ 
     .welcome-card {
         background: white; border-radius: 20px; padding: 2rem; text-align: center;
         border: 1px solid #E8EEF4; box-shadow: 0 4px 20px rgba(13,33,55,0.06);
@@ -238,31 +256,41 @@ def inject_css():
         padding: 12px 14px; text-align: left; font-size: 0.82rem; color: #3D5A73 !important;
     }
     .welcome-tile span { display: block; font-size: 1.2rem; margin-bottom: 4px; }
-
+ 
     ::-webkit-scrollbar { width: 5px; }
     ::-webkit-scrollbar-thumb { background: #CBD5E0; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
-
-
+ 
+ 
 # ══════════════════════════════════════════════
 # DATA & INDEX
 # ══════════════════════════════════════════════
 def load_text(text_json, ocr_json):
     pages = {}
     if os.path.exists(text_json):
-        with open(text_json, "r", encoding="utf-8") as f:
-            for key, content in json.load(f).items():
-                pages[key.replace("page_", "")] = content.strip()
+        try:
+            with open(text_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for key, content in data.items():
+                    pages[key.replace("page_", "")] = content.strip()
+        except Exception as e:
+            st.warning(f"Could not load {text_json}: {e}")
+    
     if os.path.exists(ocr_json):
-        with open(ocr_json, "r", encoding="utf-8") as f:
-            for key, content in json.load(f).items():
-                pn = key.replace("page_", "")
-                if len(content.strip()) > len(pages.get(pn, "")):
-                    pages[pn] = content.strip()
+        try:
+            with open(ocr_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for key, content in data.items():
+                    pn = key.replace("page_", "")
+                    if len(content.strip()) > len(pages.get(pn, "")):
+                        pages[pn] = content.strip()
+        except Exception as e:
+            st.warning(f"Could not load {ocr_json}: {e}")
+    
     return [{"page": k, "text": v}
             for k, v in sorted(pages.items(), key=lambda x: int(x[0])) if v]
-
+ 
 def chunk_pages(pages, size, overlap):
     chunks = []
     for p in pages:
@@ -273,56 +301,94 @@ def chunk_pages(pages, size, overlap):
                 chunks.append({"page": pg, "text": chunk})
             s += size - overlap
     return chunks
-
+ 
 @st.cache_resource(show_spinner=False)
 def load_index():
     if os.path.exists(INDEX_PATH):
-        with open(INDEX_PATH, "rb") as f:
-            saved = pickle.load(f)
-        return saved["index"], saved["chunks"], saved["model_name"]
+        try:
+            with open(INDEX_PATH, "rb") as f:
+                saved = pickle.load(f)
+            return saved["index"], saved["chunks"], saved["model_name"]
+        except Exception as e:
+            st.warning(f"Could not load cached index: {e}. Rebuilding...")
+    
     pages  = load_text(TEXT_JSON, OCR_JSON)
     chunks = chunk_pages(pages, CHUNK_SIZE, CHUNK_OVERLAP)
+    
+    # Error handling for empty data
+    if not chunks:
+        error_msg = f"""
+        ⚠️ **No text chunks found!** 
+        
+        Please check:
+        1. **{TEXT_JSON}** - {'✓ exists' if os.path.exists(TEXT_JSON) else '✗ missing'}
+        2. **{OCR_JSON}** - {'✓ exists' if os.path.exists(OCR_JSON) else '✗ missing'}
+        
+        Current DATA_DIR: `{DATA_DIR}`
+        
+        Make sure your JSON files contain data in the format:
+        ```json
+        {{
+            "page_1": "text content here",
+            "page_2": "more content"
+        }}
+        ```
+        """
+        st.error(error_msg)
+        st.stop()
+    
     model_name = "all-MiniLM-L6-v2"
     embedder   = SentenceTransformer(model_name)
     embs = np.array(embedder.encode([c["text"] for c in chunks], batch_size=64)).astype("float32")
-    faiss.normalize_L2(embs)
+    
+    # Only normalize if we have valid embeddings
+    if embs.size > 0:
+        faiss.normalize_L2(embs)
+    
     index = faiss.IndexFlatIP(embs.shape[1])
     index.add(embs)
-    with open(INDEX_PATH, "wb") as f:
-        pickle.dump({"index": index, "chunks": chunks, "model_name": model_name}, f)
+    
+    # Try to save the index
+    try:
+        os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
+        with open(INDEX_PATH, "wb") as f:
+            pickle.dump({"index": index, "chunks": chunks, "model_name": model_name}, f)
+    except Exception as e:
+        st.warning(f"Could not save index to disk: {e}")
+    
     return index, chunks, model_name
-
+ 
 @st.cache_resource(show_spinner=False)
 def load_embedder(name):
     return SentenceTransformer(name)
-
+ 
 def retrieve(query, index, chunks, embedder, top_k):
     q = np.array(embedder.encode([query])).astype("float32")
     faiss.normalize_L2(q)
     scores, idxs = index.search(q, top_k)
     return [{**chunks[i], "score": float(s)} for s, i in zip(scores[0], idxs[0]) if i < len(chunks)]
-
+ 
 def ask_groq(question, context_chunks, history):
     client  = Groq(api_key=GROQ_API_KEY)
     context = "\n\n---\n\n".join([f"[Page {c['page']}]\n{c['text']}" for c in context_chunks])
     system_prompt = f"""You are a professional Quality Procedures assistant for PT of the City,
 powered by the COB Solution knowledge base.
-
+ 
 Your role is to help staff and management understand Quality Procedures clearly and confidently.
-
+ 
 How to respond:
 1. Start by briefly explaining the concept in plain language (2-3 sentences max)
 2. Then provide the specific details found in the document
 3. Add practical context: "In practice, this means..." when helpful
 4. End with a natural follow-up offer if relevant
-
+ 
 Style rules:
 - Warm, professional, and clear — like a knowledgeable colleague
 - Use numbered lists for steps or procedures
 - Use tables for comparisons
 - Always cite page numbers when referencing specific content
 - If something is not in the document, say "Based on general practice..." and answer from knowledge
-
+ 
 DOCUMENT CONTEXT:
 {context}
 """
@@ -335,8 +401,8 @@ DOCUMENT CONTEXT:
         model=GROQ_MODEL, messages=messages, temperature=0.2, max_tokens=1500
     )
     return resp.choices[0].message.content
-
-
+ 
+ 
 # ══════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════
@@ -346,13 +412,13 @@ def main():
         page_icon="🏥", layout="wide",
         initial_sidebar_state="expanded",
     )
-
+ 
     # ── PASSWORD GATE ──
     if not check_password():
         st.stop()
-
+ 
     inject_css()
-
+ 
     # ── SIDEBAR ──
     with st.sidebar:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -371,10 +437,10 @@ def main():
                 <div style="font-size:1.1rem;font-weight:700;color:white">COB</div>
                 <div style="font-size:0.55rem;color:rgba(255,255,255,0.6);letter-spacing:1px">SOLUTION</div>
             </div>""", unsafe_allow_html=True)
-
+ 
         st.markdown("<div style='height:1px;background:rgba(255,255,255,0.1);margin:14px 0'></div>", unsafe_allow_html=True)
         st.markdown("<p style='font-size:0.7rem;letter-spacing:1.5px;font-weight:600;color:rgba(255,255,255,0.4);margin-bottom:10px'>QUICK QUESTIONS</p>", unsafe_allow_html=True)
-
+ 
         for icon, q in [
             ("📋", "What are the onboarding steps?"),
             ("📊", "Show all SLAs in the document"),
@@ -384,26 +450,36 @@ def main():
             ("🎯", "What are quality control standards?"),
         ]:
             st.markdown(f'<div class="question-chip">{icon} {q}</div>', unsafe_allow_html=True)
-
+ 
         st.markdown("<div style='height:1px;background:rgba(255,255,255,0.1);margin:14px 0'></div>", unsafe_allow_html=True)
-
+ 
         if st.button("🗑️  Clear conversation"):
             st.session_state.history = []
             st.rerun()
-
+ 
         if st.button("🔒  Log out"):
             st.session_state.authenticated = False
             st.session_state.history = []
             st.rerun()
-
+ 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("<p style='font-size:0.7rem;color:rgba(255,255,255,0.3);text-align:center'>Powered by Groq · Llama 3 · FAISS</p>", unsafe_allow_html=True)
-
+ 
     # ── LOAD INDEX ──
     with st.spinner("Initializing knowledge base…"):
         index, chunks, model_name = load_index()
         embedder = load_embedder(model_name)
-
+ 
+    # Show data status in sidebar
+    with st.sidebar:
+        st.markdown("<div style='height:1px;background:rgba(255,255,255,0.1);margin:14px 0'></div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <p style='font-size:0.65rem;color:rgba(255,255,255,0.3);text-align:center'>
+        📊 {len(chunks)} chunks loaded<br>
+        📁 Data: {os.path.basename(DATA_DIR)}
+        </p>
+        """, unsafe_allow_html=True)
+ 
     # ── HEADER ──
     st.markdown("""
     <div class="chat-header">
@@ -415,10 +491,10 @@ def main():
         <div class="chat-header-badge">● ONLINE</div>
     </div>
     """, unsafe_allow_html=True)
-
+ 
     if "history" not in st.session_state:
         st.session_state.history = []
-
+ 
     if not st.session_state.history:
         st.markdown("""
         <div class="welcome-card">
@@ -433,13 +509,13 @@ def main():
             </div>
         </div>
         """, unsafe_allow_html=True)
-
+ 
     for turn in st.session_state.history:
         with st.chat_message("user"):
             st.write(turn["user"])
         with st.chat_message("assistant"):
             st.write(turn["assistant"])
-
+ 
     question = st.chat_input("Ask about any procedure, SLA, policy, or standard…")
     if question:
         with st.chat_message("user"):
@@ -451,7 +527,7 @@ def main():
             st.write(answer)
         st.session_state.history.append({"user": question, "assistant": answer, "sources": relevant})
         st.rerun()
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
